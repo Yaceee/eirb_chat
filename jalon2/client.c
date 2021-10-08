@@ -203,6 +203,30 @@ void command_exec(char * str, int fd, char * nickname){
 		free(arg);
 	}
 
+	else if(strcmp("/msg", cmd) == 0){
+		char * dest = strtok(NULL, " ");
+		char * arg = NULL;
+		arg = (char *)malloc(512);
+		arg[0]='\0';
+		char * token = strtok(NULL, " ");
+		strcat(arg,token);
+		token = strtok(NULL, " ");
+		while (token != NULL)
+		{
+			strcat(arg, " ");
+			strcat(arg,token);
+			token = strtok(NULL, " ");
+		}
+		
+		int len = strlen(arg);
+		printf("Msg to %s : %s\n", dest, arg);
+		struct message * msg = make_msg(len, nickname, UNICAST_SEND,dest);
+		write_msg_struct(fd,msg);
+		write_in_socket(fd, arg, len);
+		free(msg);
+		free(arg);
+	}
+
 	else{
 		printf("Commande non reconnu\n");
 	}

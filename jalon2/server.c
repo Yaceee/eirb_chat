@@ -403,6 +403,34 @@ void msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain *
 				free(msg_rcv);
 			}
 			break;
+
+		case UNICAST_SEND:
+			{
+				char * msg_rcv = NULL;
+				msg_rcv = (char *)malloc(sizeof(char)*msg->pld_len);
+				read_from_socket(pollfd->fd, msg_rcv, msg->pld_len);
+				struct fdChain * current = chain;
+				current = current->next;
+				struct message * n_msg = make_msg(msg->pld_len, msg->nick_sender, UNICAST_SEND, msg->infos);
+				do
+				{
+					if(strcmp(current->nickname, msg->infos) == 0){
+						write_msg_struct(current->pollfd.fd, n_msg);
+						write_in_socket(current->pollfd.fd, msg_rcv, msg->pld_len);
+						break;
+					}
+					current = current->next;
+				} while (current != NULL);
+
+				if(current == NULL){
+					char * err = "User does not exist";
+					struct message * err_msg = make_msg(strlen(err), "Server", UNICAST_SEND, "");
+					server_response(pollfd->fd, err_msg, err);
+					free(err_msg);
+				}
+				free(n_msg);
+			}
+			break;
 		
 		default:
 			break;
