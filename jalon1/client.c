@@ -8,7 +8,7 @@
 #include <err.h>
 #include <poll.h>
 
-#include <common.h>
+#include "common.h"
 
 void write_int_size(int fd, void *ptr) {
 	int ret = 0, offset = 0;
@@ -153,11 +153,11 @@ int main(int argc, char const *argv[]) {
 			write_int_size(fd, (void *)&to_send);
 			write_in_socket(fd, str, to_send);
 
-			printf("Message envoye : %s (%d)\n", str, to_send);
-			if(strcmp("/quit", str) == 0)
-			{
+			if(strcmp("/quit", str) == 0){
 				stay = 0;
 			}
+
+			printf("Message envoye : %s (%d)\n", str, to_send);
 		}
 
 		else if (fds[0].revents & POLLIN) { //if event comes from server
@@ -165,11 +165,7 @@ int main(int argc, char const *argv[]) {
 			char * rcv_msg = malloc(sizeof(char)*to_read);
 			read_from_socket(fd, rcv_msg, to_read);
 
-			printf("Message recu : %s (%d)\n", rcv_msg, to_read);
-			if(strcmp("/quit", rcv_msg) == 0)
-			{
-				stay = 0;
-			}
+			printf("Message recu : %s\n", rcv_msg);
 			free(rcv_msg);
 		}
 	}

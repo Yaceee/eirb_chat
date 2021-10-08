@@ -7,8 +7,6 @@
 #include <netdb.h>
 #include <err.h>
 
-#include <common.h>
-
 #define BACKLOG 20
 
 void write_int_size(int fd, void *ptr) {
