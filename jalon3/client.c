@@ -29,7 +29,8 @@ enum msg_type {
 	FILE_REJECT,
 	FILE_SEND,
 	FILE_ACK,
-    USER_QUIT
+    USER_QUIT,
+	SERV_ERROR
 };
 
 struct message {
@@ -39,53 +40,10 @@ struct message {
 	char infos[INFOS_LEN];
 };
 
-static char* msg_type_str[] = {
-	"NICKNAME_NEW",
-	"NICKNAME_LIST",
-	"NICKNAME_INFOS",
-	"ECHO_SEND",
-	"UNICAST_SEND", 
-	"BROADCAST_SEND",
-	"MULTICAST_CREATE",
-	"MULTICAST_LIST",
-	"MULTICAST_JOIN",
-	"MULTICAST_SEND",
-	"MULTICAST_QUIT",
-	"FILE_REQUEST",
-	"FILE_ACCEPT",
-	"FILE_REJECT",
-	"FILE_SEND",
-	"FILE_ACK"
-};
+char * nickname = NULL;
+char * room = NULL;
 
 //Fonctions
-
-void write_int_size(int fd, void *ptr) {
-	int ret = 0, offset = 0;
-	while (offset != sizeof(int)) {
-		ret = write(fd, ptr + offset, sizeof(int) - offset);
-		if (-1 == ret)
-			perror("Writing size");
-		offset += ret;
-	}
-}
-
-int read_int_size(int fd) {
-	int read_value = 0;
-	int ret = 0, offset = 0;
-	while (offset != sizeof(int)) {
-		ret = read(fd, (void *)&read_value + offset, sizeof(int) - offset);
-		if (-1 == ret)
-			perror("Reading size");
-		if (0 == ret) {
-			printf("Should close connection, read 0 bytes\n");
-			close(fd);
-			return -1;
-		}
-		offset += ret;
-	}
-	return read_value;
-}
 
 int write_msg_struct(int fd, struct message * msg){
 	int ret = 0, offset = 0, size = sizeof(struct message);
@@ -162,81 +120,127 @@ struct message * make_msg(int pld_len, char * nick, enum msg_type type, char * i
 }
 
 int command_exec(char * str, int fd, char * nickname){
-	char * cmd = strtok(str, " ");
-	if(strcmp("/nick", cmd) == 0){
-		char * arg = strtok(NULL, " ");
-		if(arg != NULL){
-			struct message * msg = make_msg(0, nickname, NICKNAME_NEW, arg);
-			write_msg_struct(fd, msg);
-			strcpy(nickname, arg);
+	if(str[0] == '/'){
+		char * cmd = strtok(str, " ");
+		if(strcmp("/nick", cmd) == 0){
+			char * arg = strtok(NULL, " ");
+			if(arg != NULL){
+				struct message * msg = make_msg(0, nickname, NICKNAME_NEW, arg);
+				write_msg_struct(fd, msg);
+				free(msg);
+			}
+			else{
+				printf("Enter a nickname as argument\n");
+			}
+		}
+
+		else if(strcmp("/who", cmd) == 0){
+			struct message * msg = make_msg(0,nickname,NICKNAME_LIST, "");
+			write_msg_struct(fd,msg);
 			free(msg);
 		}
+
+		else if(strcmp("/msgall", cmd) == 0){
+			char * arg = NULL;
+			arg = (char *)malloc(512);
+			memset(arg, '\0', 512);
+			char * token = strtok(NULL, " ");
+			strcat(arg,token);
+			token = strtok(NULL, " ");
+			while (token != NULL)
+			{
+				strcat(arg, " ");
+				strcat(arg,token);
+				token = strtok(NULL, " ");
+			}
+			
+			int len = strlen(arg);
+			struct message * msg = make_msg(len, nickname, BROADCAST_SEND,"");
+			write_msg_struct(fd,msg);
+			write_in_socket(fd, arg, len);
+			free(msg);
+			free(arg);
+		}
+
+		else if(strcmp("/msg", cmd) == 0){
+			char * dest = strtok(NULL, " ");
+			char * arg = NULL;
+			arg = (char *)malloc(512);
+			memset(arg, '\0', 512);
+			char * token = strtok(NULL, " ");
+			strcat(arg,token);
+			token = strtok(NULL, " ");
+			while (token != NULL)
+			{
+				strcat(arg, " ");
+				strcat(arg,token);
+				token = strtok(NULL, " ");
+			}
+			
+			int len = strlen(arg);
+			printf("Msg to %s : %s\n", dest, arg);
+			struct message * msg = make_msg(len, nickname, UNICAST_SEND,dest);
+			write_msg_struct(fd,msg);
+			write_in_socket(fd, arg, len);
+			free(msg);
+			free(arg);
+		}
+
+		else if(strcmp("/quit", cmd) == 0){
+			struct message * msg;
+			if(strcmp(room, "general") == 0){
+				msg = make_msg(0,nickname,USER_QUIT, "");
+			}
+			else{
+				msg = make_msg(0,nickname,MULTICAST_QUIT, "");
+			}
+			write_msg_struct(fd,msg);
+			free(msg);
+			return 0;
+		}
+
+		else if(strcmp("/create", cmd) == 0){
+			char * arg = strtok(NULL, " ");
+			if(arg != NULL){
+				struct message * msg = make_msg(0, nickname, MULTICAST_CREATE, arg);
+				write_msg_struct(fd, msg);
+				free(msg);
+			}
+			else{
+				printf("Enter a channel as argument\n");
+			}
+		}
+
+		else if(strcmp("/join", cmd) == 0){
+			char * arg = strtok(NULL, " ");
+			if(arg != NULL){
+				struct message * msg = make_msg(0, nickname, MULTICAST_JOIN, arg);
+				write_msg_struct(fd, msg);
+				free(msg);
+			}
+			else{
+				printf("Enter a channel as argument\n");
+			}
+		}
+
+		else if (strcmp("/channel_list", cmd) == 0){
+			struct message * msg = make_msg(0, nickname, MULTICAST_LIST, "");
+			write_msg_struct(fd, msg);
+			free(msg);
+		}
+
 		else{
-			printf("Enter a nickname as argument\n");
+			printf("Commande non reconnu\n");
 		}
 	}
-
-	else if(strcmp("/who", cmd) == 0){
-		struct message * msg = make_msg(0,nickname,NICKNAME_LIST, "");
-		write_msg_struct(fd,msg);
-		free(msg);
-	}
-
-	else if(strcmp("/msgall", cmd) == 0){
-		char * arg = NULL;
-		arg = (char *)malloc(512);
-		memset(arg, '\0', 512);
-		char * token = strtok(NULL, " ");
-		strcat(arg,token);
-		token = strtok(NULL, " ");
-		while (token != NULL)
-		{
-			strcat(arg, " ");
-			strcat(arg,token);
-			token = strtok(NULL, " ");
-		}
-		
-		int len = strlen(arg);
-		struct message * msg = make_msg(len, nickname, BROADCAST_SEND,"");
-		write_msg_struct(fd,msg);
-		write_in_socket(fd, arg, len);
-		free(msg);
-		free(arg);
-	}
-
-	else if(strcmp("/msg", cmd) == 0){
-		char * dest = strtok(NULL, " ");
-		char * arg = NULL;
-		arg = (char *)malloc(512);
-        memset(arg, '\0', 512);
-		char * token = strtok(NULL, " ");
-		strcat(arg,token);
-		token = strtok(NULL, " ");
-		while (token != NULL)
-		{
-			strcat(arg, " ");
-			strcat(arg,token);
-			token = strtok(NULL, " ");
-		}
-		
-		int len = strlen(arg);
-		printf("Msg to %s : %s\n", dest, arg);
-		struct message * msg = make_msg(len, nickname, UNICAST_SEND,dest);
-		write_msg_struct(fd,msg);
-		write_in_socket(fd, arg, len);
-		free(msg);
-		free(arg);
-	}
-
-    else if(strcmp("/quit", cmd) == 0){
-        struct message * msg = make_msg(0,nickname,USER_QUIT, "");
-		write_msg_struct(fd,msg);
-		free(msg);
-        return 0;
-    }
-
 	else{
-		printf("Commande non reconnu\n");
+		struct message * msg = make_msg(strlen(str), nickname, MULTICAST_SEND, room);
+		write_msg_struct(fd, msg);
+		write_in_socket(fd, str, strlen(str));
+		printf("\033[1F\033[2K");
+		printf("[%s][%s] : %s\n", room, nickname, str);
+
+		free(msg);
 	}
 
     return 1;
@@ -252,12 +256,18 @@ int main(int argc, char const *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	printf("\033[2J");
+	printf("\033[H");
+
 	char * portname = (char *)argv[2];
 	char * hostname = (char *)argv[1];
 
-	char * nickname = NULL;
+	
 	nickname = (char *)malloc(sizeof(char)*NICK_LEN);
     memset(nickname, '\0', NICK_LEN);
+
+	room = (char *)malloc(sizeof(char)*NICK_LEN);
+	sprintf(room, "general");
 
     printf("Connecting to server %s on port %s ...", hostname, portname);
 
@@ -282,8 +292,6 @@ int main(int argc, char const *argv[])
 	tmp = res;
 	while (tmp != NULL) {
 		if (tmp->ai_family == AF_INET && tmp->ai_socktype == SOCK_STREAM){
-		struct sockaddr_in* sockptr = (struct sockaddr_in *)(tmp->ai_addr);
-		struct in_addr local_adress = sockptr->sin_addr;
 
 		if(-1 == connect(fd, tmp->ai_addr, tmp->ai_addrlen)){
 			perror("Connect");
@@ -298,7 +306,6 @@ int main(int argc, char const *argv[])
 
     printf("done !\n");
 
-	//send data into socket server
 
 	int stay = 1;
 
@@ -314,7 +321,6 @@ int main(int argc, char const *argv[])
 	
 	while (stay) //listening loop
 	{
-
 		poll(fds, 2, -1);
 
 		if(fds[1].revents & POLLIN){ //if event comes from stdin
@@ -339,11 +345,18 @@ int main(int argc, char const *argv[])
 			read_from_socket(fd, rcv_msg, msg->pld_len);
 
 
-			printf("[%s] : %s\n", msg->nick_sender, rcv_msg);
+			printf("[%s][%s] : %s\n",room , msg->nick_sender, rcv_msg);
+			
 
             if(msg->type == USER_QUIT){
                 stay = 0;
             }
+			else if(msg->type == MULTICAST_JOIN){
+				strcpy(room, msg->infos);
+			}
+			else if(msg->type == NICKNAME_NEW){
+				strcpy(nickname, msg->infos);
+			}
             memset(rcv_msg, '\0', msg->pld_len);
 			free(rcv_msg);
 			free(msg);
@@ -351,6 +364,7 @@ int main(int argc, char const *argv[])
 	}
 
 	free(nickname);
+	free(room);
     
     return 0;
 }

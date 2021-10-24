@@ -29,36 +29,18 @@ enum msg_type {
 	FILE_REJECT,
 	FILE_SEND,
 	FILE_ACK,
-	USER_QUIT
+	USER_QUIT,
+	SERV_ERROR
 };
 
-struct message {
+struct message { //message struct préfixe
 	int pld_len;
 	char nick_sender[NICK_LEN];
 	enum msg_type type;
 	char infos[INFOS_LEN];
 };
 
-static char* msg_type_str[] = {
-	"NICKNAME_NEW",
-	"NICKNAME_LIST",
-	"NICKNAME_INFOS",
-	"ECHO_SEND",
-	"UNICAST_SEND", 
-	"BROADCAST_SEND",
-	"MULTICAST_CREATE",
-	"MULTICAST_LIST",
-	"MULTICAST_JOIN",
-	"MULTICAST_SEND",
-	"MULTICAST_QUIT",
-	"FILE_REQUEST",
-	"FILE_ACCEPT",
-	"FILE_REJECT",
-	"FILE_SEND",
-	"FILE_ACK"
-};
-
-struct fdChain
+struct fdChain //liste chainée socket
 {
     struct pollfd pollfd;
     char nickname[NICK_LEN];
@@ -66,13 +48,15 @@ struct fdChain
     struct fdChain * next; 
 };
 
-struct room
+struct room //liste chainée salons de discutions
 {
     char nom_room[NICK_LEN];
     int Nuser;
     struct room* next;
 };
 
+
+/*----- FONCTIONS -----*/
 
 //Envoi de message
 
@@ -142,13 +126,18 @@ int read_msg_struct(int fd, void * buf){
 	return offset;
 }
 
-void server_response(int fd, struct message * msg, void * buf){
+void server_response(int fd, struct message * msg, void * buf){ //réponse avec libération struct message 
 	write_msg_struct(fd, msg);
 	write_in_socket(fd, buf, msg->pld_len);
 	free(msg);
 }
 
-struct message * make_msg(int pld_len, char * nick, enum msg_type type, char * info){
+void server_response_(int fd, struct message * msg, void * buf){ //réponse sans libération struct message
+	write_msg_struct(fd, msg);
+	write_in_socket(fd, buf, msg->pld_len);
+}
+
+struct message * make_msg(int pld_len, char * nick, enum msg_type type, char * info){ //revoie pointeur avec struct msg
 	struct message * msg = (struct message *)malloc(sizeof(struct message));
 	msg->pld_len = pld_len;
 	strcpy(msg->nick_sender, nick);
@@ -160,6 +149,8 @@ struct message * make_msg(int pld_len, char * nick, enum msg_type type, char * i
 void free_msg(struct message * msg){
 	free(msg);
 }
+
+//Gestions fd
 
 int comparePollfd(struct pollfd * pollfd1, struct pollfd * pollfd2){
     if(pollfd1->fd == pollfd2->fd){
@@ -210,7 +201,7 @@ int fdLen(struct fdChain * ptr){
     return i;
 }
 
-struct pollfd * fdChainGetList(struct fdChain * ptr){
+struct pollfd * fdChainGetList(struct fdChain * ptr){ //créer un tableau pollfds à partir de la liste chainée
     int len = fdLen(ptr);
     struct pollfd * pollfds = (struct pollfd *)malloc(sizeof(struct pollfd)*len);
     struct fdChain * current = ptr;
@@ -226,11 +217,13 @@ struct pollfd * fdChainGetList(struct fdChain * ptr){
     return pollfds;
 }
 
+//Gestion salons
 
 int roomAppend(struct room * ptr, char * r_name){
     struct room * new = (struct room *)malloc(sizeof(struct room));
     strcpy(new->nom_room, r_name);
     new->next = NULL;
+	new->Nuser = 0;
     struct room * current = ptr;
     while(current->next != NULL){
         current = current->next;
@@ -241,19 +234,17 @@ int roomAppend(struct room * ptr, char * r_name){
 
 int roomRemove(struct room * ptr, char * r_name){
     struct room * current = ptr;
-    struct room * before;
-    while (strcmp(r_name, current->nom_room) == 0 && current->next != NULL){
-        before = current;
-        current = current->next;
-    }
-    if (current->next == NULL && strcmp(r_name, current->nom_room) == 0){
-        return -1;
-    }
-    else{
-        before->next = current->next;
-        free(current);
-        return 1;
-    }
+    struct room * before = NULL;
+    do
+	{
+		if(strcmp(current->nom_room, r_name) == 0){
+			before->next = current->next;
+			return 1;
+		}
+		before = current;
+		current = current->next;
+	} while (current != NULL);
+	return -1;
 }
 
 int roomLen(struct room * ptr){
@@ -268,17 +259,53 @@ int roomLen(struct room * ptr){
 
 int roomExist(struct room * ptr, char * r_name){
 	struct room * current = ptr;
-    while(current->next != NULL){
+    do{
         if(strcmp(current->nom_room, r_name) == 0){
 			return 1;
 		}
         current = current->next;
-    }
+    }while(current != NULL);
     return 0;
 }
 
-int roomChange(struct fdChain * ptr, struct pollfd * pollfd, char * name){
+int roomAddUser(struct room * ptr, char * room_name)
+{
+	struct room * current = ptr;
+	do
+	{
+		if(strcmp(current->nom_room, room_name) == 0){
+			current->Nuser = current->Nuser + 1;
+			return 0; 
+		}
+		current = current->next;
+	} while (current != NULL);
+
+	return -1;
+	
+}
+
+int roomRemoveUser(struct room * ptr, char * room_name)
+{
+	struct room * current = ptr;
+	do
+	{
+		if(strcmp(current->nom_room, room_name) == 0){
+			current->Nuser = current->Nuser - 1;
+			if(current->Nuser == 0){
+				return 1;
+			}
+			return 0; 
+		}
+		current = current->next;
+	} while (current != NULL);
+
+	return -1;
+	
+}
+
+int roomChange(struct fdChain * ptr, struct pollfd * pollfd,struct room * rooms,  char * r_name, char * prev_r_name){
 	struct fdChain * current = ptr;
+	int last = 0;
     while (comparePollfd(&(current->pollfd), pollfd) == 0 && current->next != NULL){
         current = current->next;
     }
@@ -287,11 +314,68 @@ int roomChange(struct fdChain * ptr, struct pollfd * pollfd, char * name){
         return -1;
     }
     else if (comparePollfd(&(current->pollfd), pollfd)) {
-        strcpy(current->room, name);
+		last = roomRemoveUser(rooms, prev_r_name);
+        strcpy(current->room, r_name);
+		roomAddUser(rooms, r_name);
+    }
+
+	return last;
+}
+
+int roomGet(struct fdChain * ptr, char * user_name, char * buf){
+	struct fdChain * current = ptr;
+	while (strcmp(current->nickname, user_name) != 0 && current->next != NULL){
+        current = current->next;
+    }
+
+    if(current->next == NULL && strcmp(current->nickname, user_name) != 0){
+        return -1;
+    }
+    else if (strcmp(current->nickname, user_name) == 0) {
+        strcpy(buf, current->room);
     }
 
 	return 0;
 }
+
+void roomGetAll(struct room * ptr, char ** channels){
+	struct room * current = ptr;
+	int i = 0;
+	do
+	{
+		channels[i] = (char *)&current->nom_room;
+		current = current->next;
+		i++;
+	} while (current != NULL);
+}
+
+void roomSendAll(struct fdChain * ptr, char * msg_txt, char * r_name, char * sender_name, int pld_len){
+	struct fdChain * current = ptr;
+	struct message * msg = make_msg(pld_len, sender_name, MULTICAST_SEND, r_name);
+	do
+	{
+		if(strcmp(current->room, r_name) == 0 && strcmp(current->nickname, sender_name) != 0){
+			server_response_(current->pollfd.fd, msg, msg_txt);
+		}
+		current = current->next;
+	} while (current != NULL);
+	free(current);
+	free(msg);
+}
+
+int roomGetNUser(struct room * ptr, char * r_name){
+	struct room * current = ptr;
+	do
+	{
+		if(strcmp(r_name, current->nom_room) == 0){
+			return current->Nuser;
+		}
+		current = current->next;
+	} while (current != NULL);
+	return -1;
+}
+
+//Gestion nom utilisateur
 
 int checkNickname(struct fdChain * ptr, char * name){
 	struct fdChain * current = ptr;
@@ -348,7 +432,11 @@ void get_all_nicknames(struct fdChain * ptr, char ** nicknames){
 	} while (current != NULL);
 }
 
+//Fonction de réponse du serveur aux paquets entrant
+
 int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * chain, struct room * rooms){
+
+	//si nouvel utilisateur
 	if((strcmp(msg->nick_sender, "") == 0) && msg->type != NICKNAME_NEW){
 		char * w_msg = (char *)malloc(sizeof(char)*38);
 		strcpy(w_msg, "please login with /nick <your pseudo>");
@@ -361,14 +449,14 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 		if(checkNickname(chain, (msg->infos))){
 			char * response = "this nickname is already taken";
 			int len = strlen(response);
-			struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
+			struct message * msg = make_msg(len, "Server", SERV_ERROR, "");
 			server_response(pollfd->fd, msg, response);
 		}
 
 		else if (strcmp(msg->infos, "") == 0){
 			char * response = "nickname can't be empty";
 			int len = strlen(response);
-			struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
+			struct message * msg = make_msg(len, "Server", SERV_ERROR, "");
 			server_response(pollfd->fd, msg, response);
 		}
 
@@ -380,12 +468,12 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 			strcat(response, "Welcome on the chat ");
 			strcat(response, msg->infos);
 			int len = strlen(response);
-			struct message * msg = make_msg(len+1, "Server", UNICAST_SEND, "");
-			server_response(pollfd->fd, msg, response);
+			struct message * resp = make_msg(len+1, "Server", NICKNAME_NEW, msg->infos);
+			server_response(pollfd->fd, resp, response);
 			free(response);
 		}
 	}
-
+	//si utilisateur a déjà un nickname
 	else{
 		switch (msg->type)
 		{
@@ -393,14 +481,14 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 				if(checkNickname(chain, (msg->infos))){
 					char * response = "this nickname is already taken";
 					int len = strlen(response);
-					struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
+					struct message * msg = make_msg(len, "Server", SERV_ERROR, "");
 					server_response(pollfd->fd, msg, response);
 				}
 
 				else if (strcmp(msg->infos, "") == 0){
 					char * response = "nickname can't be empty";
 					int len = strlen(response);
-					struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
+					struct message * msg = make_msg(len, "Server", SERV_ERROR, "");
 					server_response(pollfd->fd, msg, response);
 				}
 
@@ -412,8 +500,8 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 					strcat(response, "Your new nickname is ");
 					strcat(response, msg->infos);
 					int len = strlen(response)+1;
-					struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
-					server_response(pollfd->fd, msg, response);
+					struct message * resp = make_msg(len, "Server", NICKNAME_NEW, msg->infos);
+					server_response(pollfd->fd, resp, response);
 					free(response);
 				}
 			break;
@@ -483,7 +571,7 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 
 				if(current == NULL){
 					char * err = "User does not exist";
-					struct message * err_msg = make_msg(strlen(err), "Server", UNICAST_SEND, "");
+					struct message * err_msg = make_msg(strlen(err), "Server", SERV_ERROR, "");
 					server_response(pollfd->fd, err_msg, err);
 				}
 				free(n_msg);
@@ -495,29 +583,163 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 				if(roomExist(rooms, msg->infos) == 0){
 					roomAppend(rooms, msg->infos);
 					char * r_text = (char *)malloc(sizeof(char)*(26+strlen(msg->infos)));
+					memset(r_text, '\0',26+strlen(msg->infos) );
 					strcat(r_text, "You have created channel ");
 					strcat(r_text, msg->infos);
 					struct message * r_msg = make_msg(strlen(r_text), "Server", UNICAST_SEND, "");
 					server_response(pollfd->fd, r_msg, r_text);
 					free(r_text);
 
-					roomChange(chain, pollfd, msg->infos);
+					char * actual_room = (char *)malloc(sizeof(char)*NICK_LEN);
+					memset(actual_room, '\0', NICK_LEN);
+					roomGet(chain, msg->nick_sender, actual_room);
+
+					if(roomChange(chain, pollfd, rooms, msg->infos, actual_room) == 1 && strcmp(actual_room, "general") != 0){
+						char * room_dlt = (char *)malloc(sizeof(char)*(NICK_LEN + 59));
+						sprintf(room_dlt, "You were the last user in the channel, %s has been destroyed", actual_room);
+						struct message * dst_msg = make_msg(strlen(room_dlt), "Server", UNICAST_SEND, "");
+						roomRemove(rooms, actual_room);
+						server_response(pollfd->fd, dst_msg, room_dlt);
+						free(room_dlt);
+					}
 					r_text = (char *)malloc(sizeof(char)*(25+strlen(msg->infos)));
+					memset(r_text, '\0', 25+strlen(msg->infos));
 					strcat(r_text, "You have joined channel ");
 					strcat(r_text, msg->infos);
-					r_msg = make_msg(strlen(r_text), "Server", UNICAST_SEND, "");
+					r_msg = make_msg(strlen(r_text), "Server", MULTICAST_JOIN, msg->infos);
 					server_response(pollfd->fd, r_msg, r_text);
 					free(r_text);
 				}
 				else{
 					char * r_text = (char *)malloc(sizeof(char)*27);
+					memset(r_text, '\0', 27);
 					strcat(r_text, "This channel already exist");
-					struct message * r_msg = make_msg(strlen(r_text), "Server", UNICAST_SEND, "");
+					struct message * r_msg = make_msg(strlen(r_text), "Server", SERV_ERROR, "");
 					server_response(pollfd->fd, r_msg, r_text);
 					free(r_text);
 				}
 			}
 			break;
+
+		case MULTICAST_JOIN:
+		{
+			printf("%s want to join channel %s, roomExist = %i\n", msg->nick_sender, msg->infos, roomExist(rooms, msg->infos));
+			if(roomExist(rooms, msg->infos) == 1){
+				char * r_text = (char *)malloc(sizeof(char)*(25+strlen(msg->infos)));
+				char * welcome_msg = (char *)malloc(sizeof(char)*(NICK_LEN + 20));
+				memset(r_text, '\0', 25+strlen(msg->infos));
+				memset(welcome_msg, '\0', NICK_LEN + 20);
+
+				sprintf(welcome_msg, "%s have joined the channel", msg->nick_sender);
+				roomSendAll(chain, welcome_msg, msg->infos, "INFO", strlen(welcome_msg));
+
+				strcat(r_text, "You have joined channel ");
+				strcat(r_text, msg->infos);
+
+				struct message * r_msg = make_msg(strlen(r_text), "Server", MULTICAST_JOIN, msg->infos);
+				server_response(pollfd->fd, r_msg, r_text);
+
+				char * user_room_name = (char *)malloc(sizeof(char)*NICK_LEN);
+				roomGet(chain, msg->nick_sender, user_room_name);
+				if(roomChange(chain, pollfd, rooms, msg->infos, user_room_name) == 1 && strcmp(user_room_name, "general") != 0){
+					char * room_dlt = (char *)malloc(sizeof(char)*(NICK_LEN + 59));
+					sprintf(room_dlt, "You were the last user in the channel, %s has been destroyed", user_room_name);
+					struct message * dst_msg = make_msg(strlen(room_dlt), "Server", UNICAST_SEND, "");
+					roomRemove(rooms, user_room_name);
+					server_response(pollfd->fd, dst_msg, room_dlt);
+					free(room_dlt);
+				}
+				free(user_room_name);
+				free(r_text);
+				free(welcome_msg);
+			}
+			else{
+				char * r_text = (char *)malloc(sizeof(char)*27);
+				strcat(r_text, "Channel not found");
+				struct message * r_msg = make_msg(strlen(r_text), "Server", SERV_ERROR, "");
+				server_response(pollfd->fd, r_msg, r_text);
+				free(r_text);
+			}	
+		}
+		break;
+
+		case MULTICAST_LIST:
+		{
+			char ** channels = NULL;
+			channels = (char **)malloc(sizeof(char *)*roomLen(rooms));
+			roomGetAll(rooms, channels);
+			char * response = NULL;
+			char * buf = (char *)malloc(sizeof(char)*NICK_LEN+7);
+			memset(buf, '\0', NICK_LEN+7);
+			response = (char *)malloc(sizeof(char)*((NICK_LEN+3)*roomLen(rooms)+15));
+			memset(response, '\0', ((NICK_LEN+3)*roomLen(rooms)+15));
+			strcat(response, "Channels are :");
+			for(int i = 0; i<roomLen(rooms);i++){
+				sprintf(buf, "\n- %s (%i)", channels[i], roomGetNUser(rooms, channels[i]));
+				strcat(response, buf);
+				memset(buf, '\0', NICK_LEN+7);
+			}
+			strcat(response, "\0");
+
+			int len = strlen(response);
+			struct message * msg = make_msg(len, "Server", UNICAST_SEND, "");
+			server_response(pollfd->fd, msg, response);
+			free(buf);
+			free(response);
+			free(channels);
+		}
+
+		break;
+
+		case MULTICAST_QUIT:
+		{
+			char * user_room_name = (char *)malloc(sizeof(char)*NICK_LEN);
+			roomGet(chain, msg->nick_sender, user_room_name);
+
+			if(strcmp(user_room_name, "general") != 0){
+				
+				if(roomChange(chain, pollfd, rooms, msg->infos, user_room_name) == 1){
+					char * room_dlt = (char *)malloc(sizeof(char)*(NICK_LEN + 59));
+					sprintf(room_dlt, "You were the last user in the channel, %s has been destroyed", user_room_name);
+					struct message * dst_msg = make_msg(strlen(room_dlt), "Server", UNICAST_SEND, "");
+					roomRemove(rooms, user_room_name);
+					server_response(pollfd->fd, dst_msg, room_dlt);
+					free(room_dlt);
+				}
+				else{
+					char * room_dlt = (char *)malloc(sizeof(char)*(NICK_LEN + 23));
+					sprintf(room_dlt, "%s have left the channel", user_room_name);
+					roomSendAll(chain, room_dlt, user_room_name, "INFO", strlen(room_dlt));
+					free(room_dlt);
+				}
+				char * r_text = "You returned to channel general";
+				struct message * r_msg = make_msg(strlen(r_text), "Server", MULTICAST_JOIN, "general");
+				server_response(pollfd->fd, r_msg, r_text);
+			}
+			else{
+				char * r_text = (char *)malloc(sizeof(char)*35);
+				strcat(r_text, "You are already in general channel");
+				struct message * r_msg = make_msg(strlen(r_text), "Server", UNICAST_SEND, "");
+				server_response(pollfd->fd, r_msg, r_text);
+				free(r_text);
+			}
+		}
+
+		break;
+
+		case MULTICAST_SEND:
+		{
+			char * msg_rcv = (char *)malloc(sizeof(char)*msg->pld_len);
+			memset(msg_rcv, '\0', msg->pld_len);
+			read_from_socket(pollfd->fd, msg_rcv, msg->pld_len);
+			char * room_to_send = (char *)malloc(sizeof(char)*NICK_LEN);
+			roomGet(chain, msg->nick_sender, room_to_send);
+			roomSendAll(chain, msg_rcv, room_to_send,msg->nick_sender, msg->pld_len);
+			free(msg_rcv);
+			free(room_to_send);
+		}
+
+		break;
 
 		case USER_QUIT:
 			{
@@ -533,18 +755,6 @@ int msg_response(struct message * msg, struct pollfd * pollfd, struct fdChain * 
 		}
 	}
 	return 0;
-}
-
-void fdChain_update(struct fdChain * chain, struct pollfd * pollfds){
-	struct fdChain * current = chain;
-	int i = 0;
-	do
-	{
-		current->pollfd = pollfds[i];
-		current = current->next;
-		i++;
-	} while (current != NULL);
-	
 }
 
 int socket_listen_and_bind(char *port) {
@@ -609,6 +819,8 @@ void server(int listen_fd) {
     connexions->pollfd = listen_pollfd;
 	strcpy(connexions->nickname, server_listening_name);
     connexions->next = NULL;
+	rooms->Nuser = 1;
+	strcpy(rooms->nom_room, "general");
     
 
 	int stay = 1;
@@ -673,6 +885,7 @@ void server(int listen_fd) {
 				pollfds[i].events = 0;
 				pollfds[i].revents = 0;
 				fdRemove(connexions, &pollfds[i]);
+				rooms->Nuser -= 1;
 			} 
 			
 			else if (pollfds[i].fd != listen_fd && pollfds[i].revents & POLLNVAL){
@@ -683,6 +896,7 @@ void server(int listen_fd) {
 				pollfds[i].events = 0;
 				pollfds[i].revents = 0;
 				fdRemove(connexions, &pollfds[i]);
+				rooms->Nuser -= 1;
 			}
 			
 			else if (pollfds[i].fd != listen_fd && pollfds[i].revents & POLLIN) { // If a socket different from the listening socket is active
@@ -705,6 +919,7 @@ void server(int listen_fd) {
 
         free(pollfds);
 	}
+	free(rooms);
 }
 
 int main(int argc, char const *argv[]) {
